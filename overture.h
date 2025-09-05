@@ -17,6 +17,11 @@
 #define OV_DEFAULT_ALIGNMENT (2u*sizeof(void*))
 #endif
 
+
+/**********************************************************************************
+ *                             ARENA ALLOCATOR
+ *********************************************************************************/
+
 typedef struct OvArena {
 	uint8_t* buffer;
 	size_t capacity;
@@ -27,7 +32,30 @@ OVDEF void ov_arena_init(OvArena* arena, uint8_t *buffer, size_t size);
 OVDEF void *ov_arena_alloc_aligned(OvArena* arena, size_t size, uintptr_t align);
 OVDEF void *ov_arena_alloc(OvArena* arena, size_t size);
 
+
+/**********************************************************************************
+ *                               BINARY HEAP
+ *********************************************************************************/
+
+typedef int (*ov_binary_heap_less)(size_t a, size_t b, void *ctx);
+
+typedef struct OvBinaryHeap {
+	size_t *indices;
+	size_t count;
+	size_t capacity;
+	ov_binary_heap_less less;
+	void *ctx; 
+} OvBinaryHeap;
+
+OVDEF void ov_binary_heap_init(OvBinaryHeap *heap, size_t *indices, size_t capacity, ov_binary_heap_less less, void* ctx);
+OVDEF void ov_binary_heap_insert(OvBinaryHeap *heap, size_t idx);
+
+
 #ifdef OVERTURE_IMPLEMENTATION
+
+/**********************************************************************************
+ *                     ARENA ALLOCATOR IMPLEMENTATION
+ *********************************************************************************/
 
 uintptr_t ov_align_up(uintptr_t ptr, size_t align) {
 	/* Since align is a power of two, align-1u is a mask where all low bits are set 
@@ -68,12 +96,37 @@ OVDEF void* ov_arena_alloc(OvArena* arena, size_t size) {
 	return ov_arena_alloc_aligned(arena, size, OV_DEFAULT_ALIGNMENT);
 }
 
-#endif  /* OVERTURE_IMPLEMENTATION */
 
+/**********************************************************************************
+ *                        BINARY HEAP IMPLEMENTATION
+ *********************************************************************************/
+
+OVDEF void ov_binary_heap_init(
+		OvBinaryHeap *heap, size_t *indices, size_t capacity, ov_binary_heap_less less, void *ctx) {
+	heap->indices = indices;
+	heap->capacity = capacity;
+	// TODO: we start counting from 1, let the API user know somehow?
+	heap->count = 1;
+	heap->less = less;
+	heap->ctx = ctx;
+}
+
+OVDEF void ov_binary_heap_insert(OvBinaryHeap *heap, size_t idx) {
+	// TODO: check if count greater than capacity, also what to do if it's too small?
+	size_t pos = heap->count;
+	heap->count += 1;
+	for (; pos > 1 && heap->less(idx, heap->indices[pos/2], heap->ctx) < 0; pos =	pos/2) {
+		heap->indices[pos] = heap->indices[pos/2];
+	}
+	heap->indices[pos] = idx;
+}
+
+#endif  /* OVERTURE_IMPLEMENTATION */
 #endif  /* OVERTURE_H_ */
 
-/*
- * REFERENCES
- * - How I Program C by Eskel Steenberg: https://www.youtube.com/watch?v=443UNeGrFoM
- * - Memory Allocation Strategies by GingerBill: https://web.archive.org/web/20250628233039/https://www.gingerbill.org/series/memory-allocation-strategies/
- */
+/**********************************************************************************
+ *                                REFERENCES
+ * - How I Program C by Eskil Steenberg: https://www.youtube.com/watch?v=443UNeGrFoM
+ * - Memory Allocation Strategies by GingerBill: 
+ *   https://web.archive.org/web/20250628233039/https://www.gingerbill.org/series/memory-allocation-strategies/
+ **********************************************************************************/
