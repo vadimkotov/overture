@@ -21,7 +21,6 @@
 /**********************************************************************************
  *                             ARENA ALLOCATOR
  *********************************************************************************/
-
 typedef struct OvArena {
 	uint8_t* buffer;
 	size_t capacity;
@@ -37,19 +36,22 @@ OVDEF void *ov_arena_alloc(OvArena* arena, size_t size);
  *                               BINARY HEAP
  *********************************************************************************/
 
-typedef int (*ov_binary_heap_less)(size_t a, size_t b, void *ctx);
+#define OV_BINARY_HEAP_BAD_INDEX -1
+
+typedef int (*ov_binary_heap_compare)(int a, int b, void *ctx);
 
 typedef struct OvBinaryHeap {
-	size_t *indices;
+	int *indices;
 	size_t count;
 	size_t capacity;
-	ov_binary_heap_less less;
+	ov_binary_heap_compare compare;
 	void *ctx; 
 } OvBinaryHeap;
 
-OVDEF void ov_binary_heap_init(OvBinaryHeap *heap, size_t *indices, size_t capacity, ov_binary_heap_less less, void* ctx);
-OVDEF void ov_binary_heap_insert(OvBinaryHeap *heap, size_t idx);
-
+OVDEF void ov_binary_heap_init(
+		OvBinaryHeap *heap, int *indices, size_t capacity, ov_binary_heap_compare compare, void* ctx);
+OVDEF void ov_binary_heap_insert(OvBinaryHeap *heap, int idx);
+OVDEF int ov_binary_heap_delete_root(OvBinaryHeap *heap); 
 
 #ifdef OVERTURE_IMPLEMENTATION
 
@@ -102,31 +104,62 @@ OVDEF void* ov_arena_alloc(OvArena* arena, size_t size) {
  *********************************************************************************/
 
 OVDEF void ov_binary_heap_init(
-		OvBinaryHeap *heap, size_t *indices, size_t capacity, ov_binary_heap_less less, void *ctx) {
+		OvBinaryHeap *heap, int *indices, size_t capacity, ov_binary_heap_compare compare, void *ctx) {
 	heap->indices = indices;
 	heap->capacity = capacity;
-	// TODO: we start counting from 1, let the API user know somehow?
-	heap->count = 1;
-	heap->less = less;
+	heap->count = 0;
+	heap->compare = compare;
 	heap->ctx = ctx;
 }
 
-OVDEF void ov_binary_heap_insert(OvBinaryHeap *heap, size_t idx) {
-	// TODO: check if count greater than capacity, also what to do if it's too small?
-	size_t pos = heap->count;
+OVDEF void ov_binary_heap_insert(OvBinaryHeap *heap, int idx) {
+	if (heap->count + 1 >= heap->capacity) {
+		return;
+	}
 	heap->count += 1;
-	for (; pos > 1 && heap->less(idx, heap->indices[pos/2], heap->ctx) < 0; pos =	pos/2) {
+	size_t pos = heap->count;
+	for (; pos > 1 && heap->compare(idx, heap->indices[pos/2], heap->ctx) < 0; pos =	pos/2) {
 		heap->indices[pos] = heap->indices[pos/2];
 	}
 	heap->indices[pos] = idx;
+}
+
+OVDEF int ov_binary_heap_delete_root(OvBinaryHeap *heap) {
+	if (heap->count == 0) {
+		return OV_BINARY_HEAP_BAD_INDEX;
+	}
+	int root = heap->indices[1]; 
+	int tmp = heap->indices[heap->count]; // last element
+	heap->count -= 1;
+	
+	size_t k = 1;
+	size_t child = 0;
+	// TODO: bounds, should it be child instead 2*k?
+	for (; 2*k <= heap->count; k = child) {
+		child = 2*k;
+
+		if (heap->compare(heap->indices[child], heap->indices[child+1], heap->ctx) > 0) {
+				child += 1;
+		}
+		if (heap->compare(tmp, heap->indices[child], heap->ctx) > 0) {
+				heap->indices[k] = heap->indices[child];
+		} else {
+			break;
+		}
+	}
+	heap->indices[k] = tmp;
+	return root;
 }
 
 #endif  /* OVERTURE_IMPLEMENTATION */
 #endif  /* OVERTURE_H_ */
 
 /**********************************************************************************
- *                                REFERENCES
+ *                                REFERENCES                                      *
+ **********************************************************************************
  * - How I Program C by Eskil Steenberg: https://www.youtube.com/watch?v=443UNeGrFoM
  * - Memory Allocation Strategies by GingerBill: 
  *   https://web.archive.org/web/20250628233039/https://www.gingerbill.org/series/memory-allocation-strategies/
+ * - Binary Heaps (CMU course materials)
+ *   https://web.archive.org/web/20250424173115/https://www.andrew.cmu.edu/course/15-121/lectures/Binary%20Heaps/heaps.html
  **********************************************************************************/
