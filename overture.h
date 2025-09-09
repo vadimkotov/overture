@@ -10,6 +10,7 @@
 #define OV_ASSERT(x) assert(x)
 #endif  /* OV_ASSERT */
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -50,7 +51,7 @@ typedef struct OvBinaryHeap {
 
 OVDEF void ov_binary_heap_init(
 		OvBinaryHeap *heap, int *indices, size_t capacity, ov_binary_heap_compare compare, void* ctx);
-OVDEF void ov_binary_heap_insert(OvBinaryHeap *heap, int idx);
+OVDEF bool ov_binary_heap_insert(OvBinaryHeap *heap, int idx);
 OVDEF int ov_binary_heap_delete_root(OvBinaryHeap *heap); 
 
 #ifdef OVERTURE_IMPLEMENTATION
@@ -74,7 +75,6 @@ uintptr_t ov_align_up(uintptr_t ptr, size_t align) {
 	 */
 	return (ptr + mask) & (~mask);
 }
-//TODO: Should we align at the initialization or do we require that it's a fresh alloc?	
 OVDEF void ov_arena_init(OvArena* arena, uint8_t* buffer, size_t size) {
 	arena->buffer = buffer;
 	arena->capacity = size;
@@ -112,9 +112,9 @@ OVDEF void ov_binary_heap_init(
 	heap->ctx = ctx;
 }
 
-OVDEF void ov_binary_heap_insert(OvBinaryHeap *heap, int idx) {
+OVDEF bool ov_binary_heap_insert(OvBinaryHeap *heap, int idx) {
 	if (heap->count + 1 >= heap->capacity) {
-		return;
+		return false;
 	}
 	heap->count += 1;
 	size_t pos = heap->count;
@@ -122,19 +122,13 @@ OVDEF void ov_binary_heap_insert(OvBinaryHeap *heap, int idx) {
 		heap->indices[pos] = heap->indices[pos/2];
 	}
 	heap->indices[pos] = idx;
+	return true;
 }
 
-OVDEF int ov_binary_heap_delete_root(OvBinaryHeap *heap) {
-	if (heap->count == 0) {
-		return OV_BINARY_HEAP_BAD_INDEX;
-	}
-	int root = heap->indices[1]; 
-	int tmp = heap->indices[heap->count]; // last element
-	heap->count -= 1;
-	
-	size_t k = 1;
+static void ov_internal_binary_heap_percolate_down(OvBinaryHeap *heap, size_t k) {
+	int tmp = heap->indices[k];
 	size_t child = 0;
-	// TODO: bounds, should it be child instead 2*k?
+
 	for (; 2*k <= heap->count; k = child) {
 		child = 2*k;
 
@@ -148,7 +142,29 @@ OVDEF int ov_binary_heap_delete_root(OvBinaryHeap *heap) {
 		}
 	}
 	heap->indices[k] = tmp;
+}
+OVDEF int ov_binary_heap_remove_root(OvBinaryHeap *heap) {
+	// TODO: replace this with a tail call to ov_binary_heap_remove(heap, 1)?
+	if (heap->count == 0) {
+		return OV_BINARY_HEAP_BAD_INDEX;
+	}
+	int root = heap->indices[1]; 
+	heap->indices[1] = heap->indices[heap->count]; // last element
+	heap->count -= 1;
+	ov_internal_binary_heap_percolate_down(heap, 1);
 	return root;
+}
+
+OVDEF int ov_binary_heap_remove(OvBinaryHeap *heap, size_t k) {
+	if (k > heap->count) {
+		return OV_BINARY_HEAP_BAD_INDEX;
+	}
+	// TODO: what if k = heap->count? Or a leaf?
+	int idx = heap->indices[k];
+	heap->indices[k] = heap->indices[heap->count];
+	heap->count -= 1;
+	ov_internal_binary_heap_percolate_down(heap, k);
+	return idx;
 }
 
 #endif  /* OVERTURE_IMPLEMENTATION */
