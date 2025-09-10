@@ -156,7 +156,7 @@ OVDEF OvStatus ov_binary_heap_push(OvBinaryHeap *heap, size_t index) {
 	}
 	heap->count += 1;
 	heap->indices[heap->count] = index;
-  ov_internal_binary_heap_percolate_up(heap, heap->count);
+	ov_internal_binary_heap_percolate_up(heap, heap->count);
 	return OV_STATUS_OK;
 }
 
