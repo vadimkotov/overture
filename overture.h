@@ -5,6 +5,10 @@
 #define OVDEF
 #endif  /* OVDEF */
 
+#ifndef OVINTERNAL
+#define OVINTERNAL static
+#endif /* OVINTERNAL */
+
 #ifndef OV_ASSERT
 #include <assert.h>
 #define OV_ASSERT(x) assert(x)
@@ -20,14 +24,9 @@
 
 typedef enum OvStatus {
 	OV_STATUS_OK,
-	OV_STATUS_BUFFER_OVERRUN,
+	OV_STATUS_EMPTY,
+	OV_STATUS_OUT_OF_BOUNDS,
 } OvStatus;
-/*
-typedef struct OvStatusSize {
-	OvStatus status;
-	size_t value;
-} OvStatusSize;
-*/
 
 /**********************************************************************************
  *                             ARENA ALLOCATOR
@@ -47,23 +46,24 @@ OVDEF void *ov_arena_alloc(OvArena* arena, size_t size);
  *                          INDEXED BINARY HEAP
  *********************************************************************************/
 
-#define OV_BINARY_HEAP_BAD_POSITION -1
+#define OV_HEAP_GET_ALLOC_SIZE_BYTES(capacity) ( (capacity) * sizeof (size_t) * 2u )
 
-typedef int (*ov_binary_heap_compare)(int index_a, int index_b, void *array);
+// Function pointer to compare elements indexed by the heap
+typedef int (*ov_heap_compare)(size_t index_a, size_t index_b, void *context);
 
-typedef struct OvBinaryHeap {
+typedef struct OvHeap {
 	size_t *indices;
+	size_t *positions; // items' positions in the heap for reverse lookup
+										 // lengths of indices and position must be the same!
 	size_t count;
 	size_t capacity;
-	ov_binary_heap_compare compare;
-	void *array;  // array of values indexed by the heap.
-} OvBinaryHeap;
+	ov_heap_compare compare;
+	void *context;  // array of values indexed by the heap.
+} OvHeap;
 
-OVDEF void ov_binary_heap_init(
-		OvBinaryHeap *heap, size_t *indices, size_t capacity, ov_binary_heap_compare compare, void* array);
-OVDEF OvStatus ov_binary_heap_push(OvBinaryHeap *heap, size_t index);
-// OVDEF OvStatusSize ov_binary_heap_pop(OvBinaryHeap *heap); 
-OVDEF OvStatus ov_binary_heap_pop(OvBinaryHeap *heap, size_t *out); 
+OVDEF void ov_heap_init(OvHeap *heap, size_t *buffer, size_t capacity, ov_heap_compare compare, void *context);
+OVDEF OvStatus ov_heap_add(OvHeap *heap, size_t index);
+OVDEF OvStatus ov_heap_remove_root(OvHeap *heap, size_t *out); 
 
 #ifdef OVERTURE_IMPLEMENTATION
 
@@ -114,73 +114,74 @@ OVDEF void* ov_arena_alloc(OvArena* arena, size_t size) {
  *                        BINARY HEAP IMPLEMENTATION
  *********************************************************************************/
 
-OVDEF void ov_binary_heap_init(
-		OvBinaryHeap *heap, size_t *indices, size_t capacity, ov_binary_heap_compare compare, void *array) {
-	heap->indices = indices;
+OVDEF void ov_heap_init(
+		OvHeap *heap, size_t *buffer, size_t capacity, ov_heap_compare compare, void *context) {
+	heap->indices = buffer;
+	heap->positions = &buffer[capacity];
 	heap->capacity = capacity;
 	heap->count = 0;
 	heap->compare = compare;
-	heap->array = array;
+	heap->context = context;
 }
 
-static void ov_internal_binary_heap_percolate_up(OvBinaryHeap *heap, size_t position) {
-	int index = heap->indices[position];
-	for (; position > 1 && heap->compare(index, heap->indices[position/2], heap->array) < 0; position = position/2) {
-		heap->indices[position] = heap->indices[position/2];
+
+OVINTERNAL inline void ov_heap_swap(OvHeap *heap, size_t position_a, size_t position_b) {
+	size_t index_a = heap->indices[position_a];
+	size_t index_b = heap->indices[position_b];
+
+	heap->indices[position_a] = index_b;
+	heap->indices[position_b] = index_a;
+
+	heap->positions[index_a] = position_b;
+	heap->positions[index_b] = position_a;
+}
+
+OVINTERNAL void ov_heap_fix_up(OvHeap *heap, size_t position) {
+	while (position > 1 && heap->compare(heap->indices[position], heap->indices[position/2], heap->context) < 0) {
+		ov_heap_swap(heap, position, position/2);
+		position = position/2;
 	}
-	heap->indices[position] = index;
 }
 
-static void ov_internal_binary_heap_percolate_down(OvBinaryHeap *heap, size_t position) {
-	int tmp = heap->indices[position];
-	int child = 0;
-
-	for (; 2*position <= heap->count; position = child) {
-		child = 2*position;
-
-		if (heap->compare(heap->indices[child], heap->indices[child+1], heap->array) > 0) {
-				child += 1;
+OVINTERNAL void ov_heap_fix_down(OvHeap *heap, size_t position) {
+	while (2*position <= heap->count) {
+		size_t child = 2 * position;
+		if (child < heap->count && heap->compare(heap->indices[child], heap->indices[child+1], heap->context) > 0) {
+			// Left child (2*pos) is greater than right child (2*pos+1), so we work with the smaller one.
+			child += 1;
 		}
-		if (heap->compare(tmp, heap->indices[child], heap->array) > 0) {
-				heap->indices[position] = heap->indices[child];
-		} else {
-			break;
+		if (heap->compare(heap->indices[position], heap->indices[child], heap->context) <= 0) { 
+			// If current node is less than or equal to the smaller child, we're done.
+			break; 
 		}
+		ov_heap_swap(heap, position, child);
+		position = child;
 	}
-	heap->indices[position] = tmp;
+
 }
 
-OVDEF OvStatus ov_binary_heap_push(OvBinaryHeap *heap, size_t index) {
+OVDEF OvStatus ov_heap_add(OvHeap *heap, size_t index) {
 	if (heap->count + 1 >= heap->capacity) {
-		return OV_STATUS_BUFFER_OVERRUN;
+		return OV_STATUS_OUT_OF_BOUNDS;
 	}
 	heap->count += 1;
 	heap->indices[heap->count] = index;
-	ov_internal_binary_heap_percolate_up(heap, heap->count);
+	heap->positions[index] = heap->count;
+	ov_heap_fix_up(heap, heap->count);
 	return OV_STATUS_OK;
 }
 
-#if 0
-OVDEF OvStatusSize ov_binary_heap_pop(OvBinaryHeap *heap) {
+OVDEF OvStatus ov_heap_remove_root(OvHeap *heap, size_t *out) {
 	if (heap->count == 0) {
-		return (OvStatusSize){.status = OV_STATUS_BUFFER_OVERRUN, .value = 0};
+		return OV_STATUS_EMPTY;
 	}
-	size_t root = heap->indices[1]; 
-	heap->indices[1] = heap->indices[heap->count]; // last element
-	heap->count -= 1;
-	ov_internal_binary_heap_percolate_down(heap, 1);
-	return (OvStatusSize){.status = OV_STATUS_OK, .value = root};
-}
-#endif
-
-OVDEF OvStatus ov_binary_heap_pop(OvBinaryHeap *heap, size_t *out) {
-	if (heap->count == 0) {
-		return OV_STATUS_BUFFER_OVERRUN;
+	size_t root = heap->indices[1];
+	if (out != NULL) {
+		*out = root; 
 	}
-	*out = heap->indices[1]; 
-	heap->indices[1] = heap->indices[heap->count]; // last element
+	ov_heap_swap(heap, 1, heap->count);
 	heap->count -= 1;
-	ov_internal_binary_heap_percolate_down(heap, 1);
+	ov_heap_fix_down(heap, 1);
 	return OV_STATUS_OK;
 }
 #endif  /* OVERTURE_IMPLEMENTATION */
@@ -192,6 +193,7 @@ OVDEF OvStatus ov_binary_heap_pop(OvBinaryHeap *heap, size_t *out) {
  * - How I Program C by Eskil Steenberg: https://www.youtube.com/watch?v=443UNeGrFoM
  * - Memory Allocation Strategies by GingerBill: 
  *   https://web.archive.org/web/20250628233039/https://www.gingerbill.org/series/memory-allocation-strategies/
- * - Binary Heaps (CMU course materials)
+ * - Binary Heaps 
  *   https://web.archive.org/web/20250424173115/https://www.andrew.cmu.edu/course/15-121/lectures/Binary%20Heaps/heaps.html
+ * - Algorithms in C, Parts 1-4: Fundamentals, Data Structures, Sorting, Searching by R. Sedgewick (book)
  **********************************************************************************/
