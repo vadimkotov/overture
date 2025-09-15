@@ -17,6 +17,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 
 #ifndef OV_DEFAULT_ALIGNMENT
 #define OV_DEFAULT_ALIGNMENT (2u*sizeof(void*))
@@ -46,24 +47,31 @@ OVDEF void *ov_arena_alloc(OvArena* arena, size_t size);
  *                          INDEXED BINARY HEAP
  *********************************************************************************/
 
-#define OV_HEAP_GET_ALLOC_SIZE_BYTES(capacity) ( (capacity) * sizeof (size_t) * 2u )
+// NOTE: We add 1u to capacity because the heap positions start from 1.
+#define OV_HEAP_GET_ALLOC_SIZE_BYTES(capacity) ( ((capacity + 1u) * sizeof (size_t)) * 2u )
+#define OV_HEAP_POSITION_SENTINEL 0  // We start indexing from 1, so position 0 should never be taken.
 
 // Function pointer to compare elements indexed by the heap
 typedef int (*ov_heap_compare)(size_t index_a, size_t index_b, void *context);
 
 typedef struct OvHeap {
 	size_t *indices;
-	size_t *positions; // items' positions in the heap for reverse lookup
-										 // lengths of indices and position must be the same!
+	size_t *positions; // Items' positions in the heap for reverse lookup.
+										 // Lengths of indices and position must be the same!
 	size_t count;
 	size_t capacity;
 	ov_heap_compare compare;
-	void *context;  // array of values indexed by the heap.
+	void *context;  // Array (or other container) of values indexed by the heap.
 } OvHeap;
 
+// NOTE: Use OV_HEAP_GET_ALLOC_SIZE_BYTES(capacity) macro to allocate the buffer as it must be twice the
+// capacity of the heap to be able to store both the indices and their respective positions in the heap.
 OVDEF void ov_heap_init(OvHeap *heap, size_t *buffer, size_t capacity, ov_heap_compare compare, void *context);
 OVDEF OvStatus ov_heap_add(OvHeap *heap, size_t index);
 OVDEF OvStatus ov_heap_remove_root(OvHeap *heap, size_t *out); 
+OVDEF bool ov_heap_contains(OvHeap *heap, size_t index);
+OVDEF void ov_heap_increase_priority(OvHeap *heap, size_t index);
+OVDEF void ov_heap_clear(OvHeap *heap);
 
 #ifdef OVERTURE_IMPLEMENTATION
 
@@ -117,13 +125,14 @@ OVDEF void* ov_arena_alloc(OvArena* arena, size_t size) {
 OVDEF void ov_heap_init(
 		OvHeap *heap, size_t *buffer, size_t capacity, ov_heap_compare compare, void *context) {
 	heap->indices = buffer;
-	heap->positions = &buffer[capacity];
-	heap->capacity = capacity;
+	heap->positions = &buffer[capacity + 1];
+	heap->capacity = capacity + 1;
 	heap->count = 0;
 	heap->compare = compare;
 	heap->context = context;
-}
 
+	ov_heap_clear(heap);
+}
 
 OVINTERNAL inline void ov_heap_swap(OvHeap *heap, size_t position_a, size_t position_b) {
 	size_t index_a = heap->indices[position_a];
@@ -157,10 +166,10 @@ OVINTERNAL void ov_heap_fix_down(OvHeap *heap, size_t position) {
 		ov_heap_swap(heap, position, child);
 		position = child;
 	}
-
 }
 
 OVDEF OvStatus ov_heap_add(OvHeap *heap, size_t index) {
+	// TODO: check if index already exists!
 	if (heap->count + 1 >= heap->capacity) {
 		return OV_STATUS_OUT_OF_BOUNDS;
 	}
@@ -176,14 +185,37 @@ OVDEF OvStatus ov_heap_remove_root(OvHeap *heap, size_t *out) {
 		return OV_STATUS_EMPTY;
 	}
 	size_t root = heap->indices[1];
+
 	if (out != NULL) {
 		*out = root; 
 	}
 	ov_heap_swap(heap, 1, heap->count);
 	heap->count -= 1;
 	ov_heap_fix_down(heap, 1);
+	// After we fixed the heap we set the root-th position to the sentinel value to indicate 
+	// that the item is absent from the queue.
+	heap->positions[root] = OV_HEAP_POSITION_SENTINEL;
 	return OV_STATUS_OK;
 }
+
+OVDEF bool ov_heap_contains(OvHeap *heap, size_t index) {
+	// We added +1 to the initial capacity because indices start from 1 as opposed to 0
+	// however the positions array is still 0..<capacity. So we perform a stricter check.
+	if (index >= heap->capacity - 1) {
+		return false;
+	}
+	return heap->positions[index] != OV_HEAP_POSITION_SENTINEL;
+}
+
+OVDEF void ov_heap_increase_priority(OvHeap *heap, size_t index) {
+	ov_heap_fix_up(heap, heap->positions[index]);
+}
+
+OVDEF void ov_heap_clear(OvHeap *heap) {
+	memset(heap->positions, OV_HEAP_POSITION_SENTINEL, heap->capacity);
+	heap->count = 0;
+}
+
 #endif  /* OVERTURE_IMPLEMENTATION */
 #endif  /* OVERTURE_H_ */
 
