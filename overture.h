@@ -212,7 +212,7 @@ OVDEF void ov_heap_increase_priority(OvHeap *heap, size_t index) {
 }
 
 OVDEF void ov_heap_clear(OvHeap *heap) {
-	memset(heap->positions, OV_HEAP_POSITION_SENTINEL, heap->capacity);
+	memset(heap->positions, OV_HEAP_POSITION_SENTINEL, heap->capacity * sizeof(size_t));
 	heap->count = 0;
 }
 
