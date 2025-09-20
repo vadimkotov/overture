@@ -23,6 +23,8 @@
 #define OV_DEFAULT_ALIGNMENT (2u*sizeof(void*))
 #endif
 
+#define OV_GET_STRUCT_MEMBER(type, member) ((type*)0)->member
+
 typedef enum OvStatus {
 	OV_STATUS_OK,
 	OV_STATUS_EMPTY,
@@ -47,12 +49,10 @@ OVDEF void *ov_arena_alloc(OvArena* arena, size_t size);
  *                          INDEXED BINARY HEAP
  *********************************************************************************/
 
-// NOTE: We add 1u to capacity because the heap positions start from 1.
-#define OV_HEAP_GET_ALLOC_SIZE_BYTES(capacity) ( ((capacity + 1u) * sizeof (size_t)) * 2u )
 #define OV_HEAP_POSITION_SENTINEL 0  // We start indexing from 1, so position 0 should never be taken.
 
 // Function pointer to compare elements indexed by the heap
-typedef int (*ov_heap_compare)(size_t index_a, size_t index_b, void *context);
+typedef int (*OvHeapCompare)(size_t index_a, size_t index_b, void *context);
 
 typedef struct OvHeap {
 	size_t *indices;
@@ -60,13 +60,17 @@ typedef struct OvHeap {
 										 // Lengths of indices and position must be the same!
 	size_t count;
 	size_t capacity;
-	ov_heap_compare compare;
+	OvHeapCompare compare;
 	void *context;  // Array (or other container) of values indexed by the heap.
 } OvHeap;
 
+// NOTE: We add 1u to capacity because the heap positions start from 1.
+#define OV_HEAP_GET_ALLOC_SIZE_BYTES(capacity) \
+	( ((capacity + 1u) * sizeof (*OV_GET_STRUCT_MEMBER(OvHeap, indices)) ) * 2u )
 // NOTE: Use OV_HEAP_GET_ALLOC_SIZE_BYTES(capacity) macro to allocate the buffer as it must be twice the
+
 // capacity of the heap to be able to store both the indices and their respective positions in the heap.
-OVDEF void ov_heap_init(OvHeap *heap, size_t *buffer, size_t capacity, ov_heap_compare compare, void *context);
+OVDEF void ov_heap_init(OvHeap *heap, size_t *buffer, size_t capacity, OvHeapCompare compare, void *context);
 OVDEF OvStatus ov_heap_add(OvHeap *heap, size_t index);
 OVDEF OvStatus ov_heap_remove_root(OvHeap *heap, size_t *out); 
 OVDEF bool ov_heap_contains(OvHeap *heap, size_t index);
@@ -123,7 +127,7 @@ OVDEF void* ov_arena_alloc(OvArena* arena, size_t size) {
  *********************************************************************************/
 
 OVDEF void ov_heap_init(
-		OvHeap *heap, size_t *buffer, size_t capacity, ov_heap_compare compare, void *context) {
+		OvHeap *heap, size_t *buffer, size_t capacity, OvHeapCompare compare, void *context) {
 	heap->indices = buffer;
 	heap->positions = &buffer[capacity + 1];
 	heap->capacity = capacity + 1;
@@ -212,7 +216,7 @@ OVDEF void ov_heap_increase_priority(OvHeap *heap, size_t index) {
 }
 
 OVDEF void ov_heap_clear(OvHeap *heap) {
-	memset(heap->positions, OV_HEAP_POSITION_SENTINEL, heap->capacity * sizeof(size_t));
+	memset(heap->positions, OV_HEAP_POSITION_SENTINEL, heap->capacity * sizeof(*heap->positions));
 	heap->count = 0;
 }
 
