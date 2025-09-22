@@ -1,13 +1,16 @@
-#ifndef OVERTURE_H_ 
+#ifndef OVERTURE_H_
 #define OVERTURE_H_
 
-#ifndef OVDEF
-#define OVDEF
-#endif  /* OVDEF */
+#ifndef OVDEF 
+#define OVDEF 
+#endif  /* OVDEF */ 
 
-#ifndef OVINTERNAL
-#define OVINTERNAL static
+#ifndef OVINTERNAL 
+#define OVINTERNAL static 
 #endif /* OVINTERNAL */
+
+// Indicates that this is an output argument (for when return value is written into a pointer argument). 
+#define OV_OUT
 
 #ifndef OV_ASSERT
 #include <assert.h>
@@ -23,12 +26,15 @@
 #define OV_DEFAULT_ALIGNMENT (2u*sizeof(void*))
 #endif
 
-#define OV_GET_STRUCT_MEMBER(type, member) ((type*)0)->member
+#define OV_STRUCT_MEMBER_SIZE(type, member) sizeof(((type*)0)->member)
+#define OV_STRUCT_MEMBER_DEREF_SIZE(type, member) sizeof(*((type*)0)->member)
 
+// These are generic enough status codes, they can be use in a broad array of situations.
 typedef enum OvStatus {
 	OV_STATUS_OK,
 	OV_STATUS_EMPTY,
 	OV_STATUS_OUT_OF_BOUNDS,
+	OV_STATUS_ALREADY_EXISTS,
 } OvStatus;
 
 /**********************************************************************************
@@ -56,8 +62,8 @@ typedef int (*OvHeapCompare)(size_t index_a, size_t index_b, void *context);
 
 typedef struct OvHeap {
 	size_t *indices;
-	size_t *positions; // Items' positions in the heap for reverse lookup.
-										 // Lengths of indices and position must be the same!
+	// Items' positions in the heap for reverse lookup. Lengths of indices and position must be the same!
+	size_t *positions; 
 	size_t count;
 	size_t capacity;
 	OvHeapCompare compare;
@@ -66,7 +72,7 @@ typedef struct OvHeap {
 
 // NOTE: We add 1u to capacity because the heap positions start from 1.
 #define OV_HEAP_GET_ALLOC_SIZE_BYTES(capacity) \
-	( ((capacity + 1u) * sizeof (*OV_GET_STRUCT_MEMBER(OvHeap, indices)) ) * 2u )
+	( ((capacity + 1u) * OV_STRUCT_MEMBER_DEREF_SIZE(OvHeap, indices) ) * 2u )
 // NOTE: Use OV_HEAP_GET_ALLOC_SIZE_BYTES(capacity) macro to allocate the buffer as it must be twice the
 
 // capacity of the heap to be able to store both the indices and their respective positions in the heap.
@@ -76,6 +82,35 @@ OVDEF OvStatus ov_heap_remove_root(OvHeap *heap, size_t *out);
 OVDEF bool ov_heap_contains(OvHeap *heap, size_t index);
 OVDEF void ov_heap_increase_priority(OvHeap *heap, size_t index);
 OVDEF void ov_heap_clear(OvHeap *heap);
+
+/**********************************************************************************
+ *                         PRIORITY QUEUE 
+ *********************************************************************************/
+
+#define OV_PQ_POSITION_SENTINEL 0  // We start indexing from 1, so position 0 should never be taken.
+
+typedef struct OvPQItem {
+	size_t index;
+	float priority;
+} OvPQItem;
+
+typedef struct OvPQ {
+	OvPQItem *items;
+	// Items' positions in the heap for reverse lookup. Lengths of indices and position must be the same!
+	size_t *positions; 
+	size_t count;
+	size_t capacity;
+} OvPQ;
+
+
+// capacity of the heap to be able to store both the indices and their respective positions in the heap.
+OVDEF OvPQ *ov_pq_create(OvArena *arena, size_t capacity);
+OVDEF OvStatus ov_pq_add(OvPQ *queue, size_t index, float priority);
+OVDEF OvStatus ov_pq_remove_root(OvPQ *queue, OV_OUT size_t *index); 
+OVDEF bool ov_pq_contains(OvPQ *queue, size_t index);
+OVDEF OvStatus ov_pq_increase_priority(OvPQ *queue, size_t index, float new_priority);
+OVDEF void ov_pq_clear(OvPQ *queue);
+OVDEF bool ov_pq_is_empty(OvPQ *queue);
 
 #ifdef OVERTURE_IMPLEMENTATION
 
@@ -201,7 +236,6 @@ OVDEF OvStatus ov_heap_remove_root(OvHeap *heap, size_t *out) {
 	heap->positions[root] = OV_HEAP_POSITION_SENTINEL;
 	return OV_STATUS_OK;
 }
-
 OVDEF bool ov_heap_contains(OvHeap *heap, size_t index) {
 	// We added +1 to the initial capacity because indices start from 1 as opposed to 0
 	// however the positions array is still 0..<capacity. So we perform a stricter check.
@@ -220,16 +254,130 @@ OVDEF void ov_heap_clear(OvHeap *heap) {
 	heap->count = 0;
 }
 
+/**********************************************************************************
+ *                       PRIORITY QUEUE IMPLEMENTATION 
+ *********************************************************************************/
+
+OVDEF OvPQ *ov_pq_create(OvArena *arena, size_t capacity) {
+	capacity++; // since we start indexing from 1
+
+	OvPQ *queue = ov_arena_alloc(arena, sizeof(OvPQ));
+	OvPQItem *items     = ov_arena_alloc(arena, capacity * sizeof(OvPQItem));
+	size_t   *positions = ov_arena_alloc(arena, capacity * sizeof(size_t));
+	queue->items = items;
+	queue->positions = positions;
+	queue->capacity = capacity;
+	ov_pq_clear(queue);
+	return queue;
+}
+
+OVINTERNAL inline void ov_pq_swap(OvPQ *queue, size_t position_a, size_t position_b) {
+	OvPQItem item_a = queue->items[position_a];
+	OvPQItem item_b = queue->items[position_b];
+
+	queue->items[position_a] = item_b;
+	queue->items[position_b] = item_a;
+
+	queue->positions[item_a.index] = position_b;
+	queue->positions[item_b.index] = position_a;
+}
+
+OVINTERNAL void ov_pq_fix_up(OvPQ *queue, size_t position) {
+	while (position > 1 && queue->items[position].priority < queue->items[position/2].priority) {
+		ov_pq_swap(queue, position, position/2);
+		position = position/2;
+	}
+}
+
+OVINTERNAL void ov_pq_fix_down(OvPQ *queue, size_t position) {
+	while (2*position <= queue->count) {
+		size_t child = 2 * position;
+		if (child < queue->count && queue->items[child].priority > queue->items[child+1].priority) {
+			// Left child (2*pos) is greater than right child (2*pos+1), so we work with the smaller one.
+			child += 1;
+		}
+		if (queue->items[position].priority <= queue->items[child].priority) {
+			// If current node is less than or equal to the smaller child, we're done.
+			break; 
+		}
+		ov_pq_swap(queue, position, child);
+		position = child;
+	}
+}
+
+OVDEF OvStatus ov_pq_add(OvPQ *queue, size_t index, float priority) {
+	if (ov_pq_contains(queue, index)) {
+		return OV_STATUS_ALREADY_EXISTS;
+	}
+	if (queue->count + 1 >= queue->capacity || index >= queue->capacity - 1) {
+		return OV_STATUS_OUT_OF_BOUNDS;
+	}
+	queue->count += 1;
+	queue->items[queue->count] = (OvPQItem){.index = index, .priority = priority};
+	queue->positions[index] = queue->count;
+	ov_pq_fix_up(queue, queue->count);
+	return OV_STATUS_OK;
+}
+
+OVDEF OvStatus ov_pq_remove_root(OvPQ *queue, OV_OUT size_t *index) {
+	if (queue->count == 0) {
+		return OV_STATUS_EMPTY;
+	}
+	size_t root = queue->items[1].index;
+
+	if (index != NULL) {
+		*index = root; 
+	}
+	ov_pq_swap(queue, 1, queue->count);
+	queue->count -= 1;
+	ov_pq_fix_down(queue, 1);
+	// After we fixed the heap we set the root-th position to the sentinel value to indicate 
+	// that the item is absent from the queue.
+	queue->positions[root] = OV_PQ_POSITION_SENTINEL;
+	return OV_STATUS_OK;
+}
+
+OVDEF bool ov_pq_contains(OvPQ *heap, size_t index) {
+	// We added +1 to the initial capacity because indices start from 1 as opposed to 0
+	// however the positions array is still 0..<capacity. So we perform a stricter check.
+	if (index >= heap->capacity - 1) {
+		return false;
+	}
+	return heap->positions[index] != OV_HEAP_POSITION_SENTINEL;
+}
+
+OVDEF OvStatus ov_pq_increase_priority(OvPQ *queue, size_t index, float new_priority) {
+	if (queue->count == 0) {
+		return OV_STATUS_EMPTY;
+	}
+	if (index >= queue->capacity - 1) {
+		return OV_STATUS_OUT_OF_BOUNDS;
+	}
+	size_t position = queue->positions[index];
+	queue->items[position].priority = new_priority;
+	ov_pq_fix_up(queue, position);
+	return OV_STATUS_OK;
+}
+
+OVDEF void ov_pq_clear(OvPQ *queue) {
+	memset(queue->positions, OV_PQ_POSITION_SENTINEL, queue->capacity * sizeof(*queue->positions));
+	queue->count = 0;
+}
+
+OVDEF bool ov_pq_is_empty(OvPQ *queue) {
+	return queue->count > 0;
+}
+
 #endif  /* OVERTURE_IMPLEMENTATION */
 #endif  /* OVERTURE_H_ */
 
 /**********************************************************************************
  *                                REFERENCES                                      *
  **********************************************************************************
- * - How I Program C by Eskil Steenberg: https://www.youtube.com/watch?v=443UNeGrFoM
- * - Memory Allocation Strategies by GingerBill: 
- *   https://web.archive.org/web/20250628233039/https://www.gingerbill.org/series/memory-allocation-strategies/
- * - Binary Heaps 
- *   https://web.archive.org/web/20250424173115/https://www.andrew.cmu.edu/course/15-121/lectures/Binary%20Heaps/heaps.html
- * - Algorithms in C, Parts 1-4: Fundamentals, Data Structures, Sorting, Searching by R. Sedgewick (book)
+ - How I Program C by Eskil Steenberg: https://www.youtube.com/watch?v=443UNeGrFoM
+ - Memory Allocation Strategies by GingerBill: 
+   https://web.archive.org/web/20250628233039/https://www.gingerbill.org/series/memory-allocation-strategies/
+ - Binary Heaps 
+   https://web.archive.org/web/20250424173115/https://www.andrew.cmu.edu/course/15-121/lectures/Binary%20Heaps/heaps.html
+ - Algorithms in C, Parts 1-4: Fundamentals, Data Structures, Sorting, Searching by R. Sedgewick (book)
  **********************************************************************************/
