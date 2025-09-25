@@ -26,8 +26,6 @@
 #define OV_DEFAULT_ALIGNMENT (2u*sizeof(void*))
 #endif
 
-#define OV_STRUCT_MEMBER_SIZE(type, member) sizeof(((type*)0)->member)
-#define OV_STRUCT_MEMBER_DEREF_SIZE(type, member) sizeof(*((type*)0)->member)
 
 // These are generic enough status codes, they can be use in a broad array of situations.
 typedef enum OvStatus {
@@ -40,54 +38,21 @@ typedef enum OvStatus {
 /**********************************************************************************
  *                             ARENA ALLOCATOR
  *********************************************************************************/
+
 typedef struct OvArena {
 	uint8_t* buffer;
 	size_t capacity;
 	size_t offset;
 } OvArena;
 
-OVDEF void ov_arena_init(OvArena* arena, uint8_t *buffer, size_t size);
+OVDEF OvArena *ov_arena_create(uint8_t *buffer, size_t size);
+// OVDEF void ov_arena_init(OvArena* arena, uint8_t *buffer, size_t size);
 OVDEF void *ov_arena_alloc_aligned(OvArena* arena, size_t size, uintptr_t align);
 OVDEF void *ov_arena_alloc(OvArena* arena, size_t size);
-
-
-/**********************************************************************************
- *                          INDEXED BINARY HEAP
- *********************************************************************************/
-
-#define OV_HEAP_POSITION_SENTINEL 0  // We start indexing from 1, so position 0 should never be taken.
-
-// Function pointer to compare elements indexed by the heap
-typedef int (*OvHeapCompare)(size_t index_a, size_t index_b, void *context);
-
-typedef struct OvHeap {
-	size_t *indices;
-	// Items' positions in the heap for reverse lookup. Lengths of indices and position must be the same!
-	size_t *positions; 
-	size_t count;
-	size_t capacity;
-	OvHeapCompare compare;
-	void *context;  // Array (or other container) of values indexed by the heap.
-} OvHeap;
-
-// NOTE: We add 1u to capacity because the heap positions start from 1.
-#define OV_HEAP_GET_ALLOC_SIZE_BYTES(capacity) \
-	( ((capacity + 1u) * OV_STRUCT_MEMBER_DEREF_SIZE(OvHeap, indices) ) * 2u )
-// NOTE: Use OV_HEAP_GET_ALLOC_SIZE_BYTES(capacity) macro to allocate the buffer as it must be twice the
-
-// capacity of the heap to be able to store both the indices and their respective positions in the heap.
-OVDEF void ov_heap_init(OvHeap *heap, size_t *buffer, size_t capacity, OvHeapCompare compare, void *context);
-OVDEF OvStatus ov_heap_add(OvHeap *heap, size_t index);
-OVDEF OvStatus ov_heap_remove_root(OvHeap *heap, size_t *out); 
-OVDEF bool ov_heap_contains(OvHeap *heap, size_t index);
-OVDEF void ov_heap_increase_priority(OvHeap *heap, size_t index);
-OVDEF void ov_heap_clear(OvHeap *heap);
 
 /**********************************************************************************
  *                         PRIORITY QUEUE 
  *********************************************************************************/
-
-#define OV_PQ_POSITION_SENTINEL 0  // We start indexing from 1, so position 0 should never be taken.
 
 typedef struct OvPQItem {
 	size_t index;
@@ -120,19 +85,20 @@ OVDEF bool ov_pq_is_empty(OvPQ *queue);
 
 uintptr_t ov_align_up(uintptr_t ptr, size_t align) {
 	/* Since align is a power of two, align-1u is a mask where all low bits are set 
-	 * to one (0b10 -> 0b1, 0b100 -> 0b11, 0b1000 -> 0b111, etc.)
+	   to one (0b10 -> 0b1, 0b100 -> 0b11, 0b1000 -> 0b111, etc.)
 	 */
 	uintptr_t mask = (uintptr_t)align - 1u;
 	/* Then (ptr + mask) bumps the pointer to the next "bucket" of the powers of two,
-	 * it will likely overshoot, this where the logical AND with (~m), it clears the
-	 * low bits leaving us at the exact power of two.
-	 * Example: suppose ptr = 73, align = 16
-	 *          83 + 15 = 98
-	 *          98 & (~15) = 98 & 0b11..10000 = 96
-	 *  This is equivalent to ptr + align - (ptr % align)
+	   it will likely overshoot, this where the logical AND with (~m), it clears the
+	   low bits leaving us at the exact power of two.
+	   Example: suppose ptr = 73, align = 16
+	            83 + 15 = 98
+	            98 & (~15) = 98 & 0b11..10000 = 96
+	    This is equivalent to ptr + align - (ptr % align)
 	 */
 	return (ptr + mask) & (~mask);
 }
+
 OVDEF void ov_arena_init(OvArena* arena, uint8_t* buffer, size_t size) {
 	arena->buffer = buffer;
 	arena->capacity = size;
@@ -158,111 +124,16 @@ OVDEF void* ov_arena_alloc(OvArena* arena, size_t size) {
 
 
 /**********************************************************************************
- *                        BINARY HEAP IMPLEMENTATION
- *********************************************************************************/
-
-OVDEF void ov_heap_init(
-		OvHeap *heap, size_t *buffer, size_t capacity, OvHeapCompare compare, void *context) {
-	heap->indices = buffer;
-	heap->positions = &buffer[capacity + 1];
-	heap->capacity = capacity + 1;
-	heap->count = 0;
-	heap->compare = compare;
-	heap->context = context;
-
-	ov_heap_clear(heap);
-}
-
-OVINTERNAL inline void ov_heap_swap(OvHeap *heap, size_t position_a, size_t position_b) {
-	size_t index_a = heap->indices[position_a];
-	size_t index_b = heap->indices[position_b];
-
-	heap->indices[position_a] = index_b;
-	heap->indices[position_b] = index_a;
-
-	heap->positions[index_a] = position_b;
-	heap->positions[index_b] = position_a;
-}
-
-OVINTERNAL void ov_heap_fix_up(OvHeap *heap, size_t position) {
-	while (position > 1 && heap->compare(heap->indices[position], heap->indices[position/2], heap->context) < 0) {
-		ov_heap_swap(heap, position, position/2);
-		position = position/2;
-	}
-}
-
-OVINTERNAL void ov_heap_fix_down(OvHeap *heap, size_t position) {
-	while (2*position <= heap->count) {
-		size_t child = 2 * position;
-		if (child < heap->count && heap->compare(heap->indices[child], heap->indices[child+1], heap->context) > 0) {
-			// Left child (2*pos) is greater than right child (2*pos+1), so we work with the smaller one.
-			child += 1;
-		}
-		if (heap->compare(heap->indices[position], heap->indices[child], heap->context) <= 0) { 
-			// If current node is less than or equal to the smaller child, we're done.
-			break; 
-		}
-		ov_heap_swap(heap, position, child);
-		position = child;
-	}
-}
-
-OVDEF OvStatus ov_heap_add(OvHeap *heap, size_t index) {
-	// TODO: check if index already exists!
-	if (heap->count + 1 >= heap->capacity) {
-		return OV_STATUS_OUT_OF_BOUNDS;
-	}
-	heap->count += 1;
-	heap->indices[heap->count] = index;
-	heap->positions[index] = heap->count;
-	ov_heap_fix_up(heap, heap->count);
-	return OV_STATUS_OK;
-}
-
-OVDEF OvStatus ov_heap_remove_root(OvHeap *heap, size_t *out) {
-	if (heap->count == 0) {
-		return OV_STATUS_EMPTY;
-	}
-	size_t root = heap->indices[1];
-
-	if (out != NULL) {
-		*out = root; 
-	}
-	ov_heap_swap(heap, 1, heap->count);
-	heap->count -= 1;
-	ov_heap_fix_down(heap, 1);
-	// After we fixed the heap we set the root-th position to the sentinel value to indicate 
-	// that the item is absent from the queue.
-	heap->positions[root] = OV_HEAP_POSITION_SENTINEL;
-	return OV_STATUS_OK;
-}
-OVDEF bool ov_heap_contains(OvHeap *heap, size_t index) {
-	// We added +1 to the initial capacity because indices start from 1 as opposed to 0
-	// however the positions array is still 0..<capacity. So we perform a stricter check.
-	if (index >= heap->capacity - 1) {
-		return false;
-	}
-	return heap->positions[index] != OV_HEAP_POSITION_SENTINEL;
-}
-
-OVDEF void ov_heap_increase_priority(OvHeap *heap, size_t index) {
-	ov_heap_fix_up(heap, heap->positions[index]);
-}
-
-OVDEF void ov_heap_clear(OvHeap *heap) {
-	memset(heap->positions, OV_HEAP_POSITION_SENTINEL, heap->capacity * sizeof(*heap->positions));
-	heap->count = 0;
-}
-
-/**********************************************************************************
  *                       PRIORITY QUEUE IMPLEMENTATION 
  *********************************************************************************/
 
+#define OV_PQ_START_INDEX       1u  // We start indexing queue items from 1, not from 0.
+#define OV_PQ_POSITION_SENTINEL 0u  // Since we're indexing from 1, 0 can be use as a sentinel value.
+
 OVDEF OvPQ *ov_pq_create(OvArena *arena, size_t capacity) {
-	capacity++; // since we start indexing from 1
 
 	OvPQ *queue = ov_arena_alloc(arena, sizeof(OvPQ));
-	OvPQItem *items     = ov_arena_alloc(arena, capacity * sizeof(OvPQItem));
+	OvPQItem *items     = ov_arena_alloc(arena, (capacity + OV_PQ_START_INDEX) * sizeof(OvPQItem));
 	size_t   *positions = ov_arena_alloc(arena, capacity * sizeof(size_t));
 	queue->items = items;
 	queue->positions = positions;
@@ -309,7 +180,7 @@ OVDEF OvStatus ov_pq_add(OvPQ *queue, size_t index, float priority) {
 	if (ov_pq_contains(queue, index)) {
 		return OV_STATUS_ALREADY_EXISTS;
 	}
-	if (queue->count + 1 >= queue->capacity || index >= queue->capacity - 1) {
+	if (queue->count + 1 >= queue->capacity + OV_PQ_START_INDEX || index >= queue->capacity) {
 		return OV_STATUS_OUT_OF_BOUNDS;
 	}
 	queue->count += 1;
@@ -338,19 +209,17 @@ OVDEF OvStatus ov_pq_remove_root(OvPQ *queue, OV_OUT size_t *index) {
 }
 
 OVDEF bool ov_pq_contains(OvPQ *heap, size_t index) {
-	// We added +1 to the initial capacity because indices start from 1 as opposed to 0
-	// however the positions array is still 0..<capacity. So we perform a stricter check.
-	if (index >= heap->capacity - 1) {
+	if (index >= heap->capacity) {
 		return false;
 	}
-	return heap->positions[index] != OV_HEAP_POSITION_SENTINEL;
+	return heap->positions[index] != OV_PQ_POSITION_SENTINEL;
 }
 
 OVDEF OvStatus ov_pq_increase_priority(OvPQ *queue, size_t index, float new_priority) {
 	if (queue->count == 0) {
 		return OV_STATUS_EMPTY;
 	}
-	if (index >= queue->capacity - 1) {
+	if (index >= queue->capacity) {
 		return OV_STATUS_OUT_OF_BOUNDS;
 	}
 	size_t position = queue->positions[index];
