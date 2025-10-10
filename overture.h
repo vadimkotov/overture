@@ -39,16 +39,25 @@ typedef enum OvStatus {
  *                             ARENA ALLOCATOR
  *********************************************************************************/
 
+#if 0
 typedef struct OvArena {
 	uint8_t* buffer;
 	size_t capacity;
 	size_t offset;
 } OvArena;
+#else
+typedef struct OvArena {
+	size_t capacity;
+	size_t offset;
+	uint8_t buffer[];
+} OvArena;
+#endif
 
-OVDEF OvArena *ov_arena_create(uint8_t *buffer, size_t size);
+OVDEF OvArena *ov_arena_create(void *buffer, size_t capacity);
 // OVDEF void ov_arena_init(OvArena* arena, uint8_t *buffer, size_t size);
 OVDEF void *ov_arena_alloc_aligned(OvArena* arena, size_t size, uintptr_t align);
 OVDEF void *ov_arena_alloc(OvArena* arena, size_t size);
+OVDEF void ov_arena_rewind(OvArena *arena);
 
 /**********************************************************************************
  *                         PRIORITY QUEUE 
@@ -99,11 +108,23 @@ uintptr_t ov_align_up(uintptr_t ptr, size_t align) {
 	return (ptr + mask) & (~mask);
 }
 
+#if 0
 OVDEF void ov_arena_init(OvArena* arena, uint8_t* buffer, size_t size) {
 	arena->buffer = buffer;
 	arena->capacity = size;
 	arena->offset = 0;
 }
+#else
+
+#define OV_GET_ARENA_ALLOC_SIZE(capacity) capacity + sizeof(OvArena)
+
+OVDEF OvArena *ov_arena_create(void *buffer, size_t capacity) {
+	OvArena *arena = (OvArena*)buffer;
+	arena->capacity = capacity;
+	arena->offset = 0;
+	return arena;
+}
+#endif
 
 OVDEF void *ov_arena_alloc_aligned(OvArena* arena, size_t size, size_t align) {
 	OV_ASSERT((align & (align-1u)) == 0); // power of two
@@ -113,15 +134,15 @@ OVDEF void *ov_arena_alloc_aligned(OvArena* arena, size_t size, size_t align) {
 	if (offset_aligned + size <= arena->capacity) {
 		void* ptr = &arena->buffer[offset_aligned];
 		arena->offset = offset_aligned + size;
+		memset(ptr, 0, size);
 		return ptr;
 	}
 	return NULL;
 }
 
-OVDEF void* ov_arena_alloc(OvArena* arena, size_t size) {
+OVDEF void *ov_arena_alloc(OvArena *arena, size_t size) {
 	return ov_arena_alloc_aligned(arena, size, OV_DEFAULT_ALIGNMENT);
 }
-
 
 /**********************************************************************************
  *                       PRIORITY QUEUE IMPLEMENTATION 
@@ -234,7 +255,7 @@ OVDEF void ov_pq_clear(OvPQ *queue) {
 }
 
 OVDEF bool ov_pq_is_empty(OvPQ *queue) {
-	return queue->count > 0;
+	return queue->count == 0;
 }
 
 #endif  /* OVERTURE_IMPLEMENTATION */
