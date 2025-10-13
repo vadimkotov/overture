@@ -35,29 +35,71 @@ typedef enum OvStatus {
 	OV_STATUS_ALREADY_EXISTS,
 } OvStatus;
 
+
+/**********************************************************************************
+ *                              STATIC ARRAYS
+ *********************************************************************************/
+
+#define OV_DEFINE_ARRAY(member_type, type_name, func_prefix) \
+	typedef struct { \
+		size_t capacity; \
+		size_t size; \
+		member_type data[]; \
+	}	type_name; \
+  \
+	type_name *func_prefix##_create(void *buffer, size_t buffer_size) { \
+		if (buffer_size <= sizeof (type_name)) { \
+			return NULL; \
+		} \
+		type_name *array = (type_name*)buffer; \
+		array->capacity = (buffer_size - sizeof(type_name))/sizeof(member_type); \
+		array->size = 0; \
+		return array; \
+	} \
+	\
+	OvStatus func_prefix##_add(type_name *array, member_type element) { \
+		if (array->size + 1 > array->capacity) { \
+			return OV_STATUS_OUT_OF_BOUNDS; \
+		} \
+		array->data[array->size] = element; \
+		array->size += 1; \
+		return OV_STATUS_OK; \
+	} \
+	\
+	OvStatus func_prefix##_get(type_name *array, size_t index, OV_OUT member_type *element) { \
+		if (index >= array->size) { \
+			return OV_STATUS_OUT_OF_BOUNDS; \
+		} \
+		if (element != NULL) { \
+			*element = array->data[index]; \
+		}	\
+		return OV_STATUS_OK; \
+	} \
+	\
+	OvStatus func_prefix##_remove(type_name *array, size_t index) { \
+		if (index >= array->size) { \
+			return OV_STATUS_OUT_OF_BOUNDS; \
+		} \
+		array->data[index] = array->data[array->size-1]; \
+		array->size -= 1; \
+		return OV_STATUS_OK; \
+	}
+
+
 /**********************************************************************************
  *                             ARENA ALLOCATOR
  *********************************************************************************/
 
-#if 0
-typedef struct OvArena {
-	uint8_t* buffer;
-	size_t capacity;
-	size_t offset;
-} OvArena;
-#else
 typedef struct OvArena {
 	size_t capacity;
 	size_t offset;
 	uint8_t buffer[];
 } OvArena;
-#endif
 
 OVDEF OvArena *ov_arena_create(void *buffer, size_t capacity);
-// OVDEF void ov_arena_init(OvArena* arena, uint8_t *buffer, size_t size);
-OVDEF void *ov_arena_alloc_aligned(OvArena* arena, size_t size, uintptr_t align);
+OVDEF void *ov_arena_alloc_aligned(OvArena* arena, size_t size, size_t align);
 OVDEF void *ov_arena_alloc(OvArena* arena, size_t size);
-OVDEF void ov_arena_rewind(OvArena *arena);
+OVDEF void ov_arena_reset(OvArena *arena);
 
 /**********************************************************************************
  *                         PRIORITY QUEUE 
@@ -70,19 +112,18 @@ typedef struct OvPQItem {
 
 typedef struct OvPQ {
 	OvPQItem *items;
-	// Items' positions in the heap for reverse lookup. Lengths of indices and position must be the same!
 	size_t *positions; 
 	size_t count;
 	size_t capacity;
 } OvPQ;
 
 
-// capacity of the heap to be able to store both the indices and their respective positions in the heap.
+// Capacity of the heap to be able to store both the indices and their respective positions in the heap.
 OVDEF OvPQ *ov_pq_create(OvArena *arena, size_t capacity);
 OVDEF OvStatus ov_pq_add(OvPQ *queue, size_t index, float priority);
 OVDEF OvStatus ov_pq_remove_root(OvPQ *queue, OV_OUT size_t *index); 
 OVDEF bool ov_pq_contains(OvPQ *queue, size_t index);
-OVDEF OvStatus ov_pq_increase_priority(OvPQ *queue, size_t index, float new_priority);
+OVDEF OvStatus ov_pq_update_priority(OvPQ *queue, size_t index, float new_priority);
 OVDEF void ov_pq_clear(OvPQ *queue);
 OVDEF bool ov_pq_is_empty(OvPQ *queue);
 
@@ -108,30 +149,23 @@ uintptr_t ov_align_up(uintptr_t ptr, size_t align) {
 	return (ptr + mask) & (~mask);
 }
 
-#if 0
-OVDEF void ov_arena_init(OvArena* arena, uint8_t* buffer, size_t size) {
-	arena->buffer = buffer;
-	arena->capacity = size;
-	arena->offset = 0;
-}
-#else
-
-#define OV_GET_ARENA_ALLOC_SIZE(capacity) capacity + sizeof(OvArena)
-
-OVDEF OvArena *ov_arena_create(void *buffer, size_t capacity) {
+OVDEF OvArena *ov_arena_create(void *buffer, size_t buffer_size) {
+	if (buffer_size <= sizeof(OvArena)) {
+		return NULL;
+	}
 	OvArena *arena = (OvArena*)buffer;
-	arena->capacity = capacity;
+	arena->capacity = buffer_size - sizeof (OvArena);
 	arena->offset = 0;
 	return arena;
 }
-#endif
 
 OVDEF void *ov_arena_alloc_aligned(OvArena* arena, size_t size, size_t align) {
 	OV_ASSERT((align & (align-1u)) == 0); // power of two
 	uintptr_t ptr = (uintptr_t)arena->buffer + (uintptr_t)arena->offset;
 	size_t offset_aligned = (size_t)(ov_align_up(ptr, align) - (uintptr_t)arena->buffer);
 
-	if (offset_aligned + size <= arena->capacity) {
+	// I think this should not overflow?
+	if (offset_aligned <= arena->capacity - size) {
 		void* ptr = &arena->buffer[offset_aligned];
 		arena->offset = offset_aligned + size;
 		memset(ptr, 0, size);
@@ -144,6 +178,10 @@ OVDEF void *ov_arena_alloc(OvArena *arena, size_t size) {
 	return ov_arena_alloc_aligned(arena, size, OV_DEFAULT_ALIGNMENT);
 }
 
+OVDEF void ov_arena_reset(OvArena *arena) {
+	arena->offset = 0;
+}
+
 /**********************************************************************************
  *                       PRIORITY QUEUE IMPLEMENTATION 
  *********************************************************************************/
@@ -154,8 +192,17 @@ OVDEF void *ov_arena_alloc(OvArena *arena, size_t size) {
 OVDEF OvPQ *ov_pq_create(OvArena *arena, size_t capacity) {
 
 	OvPQ *queue = ov_arena_alloc(arena, sizeof(OvPQ));
-	OvPQItem *items     = ov_arena_alloc(arena, (capacity + OV_PQ_START_INDEX) * sizeof(OvPQItem));
-	size_t   *positions = ov_arena_alloc(arena, capacity * sizeof(size_t));
+	if (queue == NULL) {
+		return NULL;
+	}
+	OvPQItem *items = ov_arena_alloc(arena, (capacity + OV_PQ_START_INDEX) * sizeof(OvPQItem));
+	if (items == NULL) {
+		return NULL;
+	}
+	size_t *positions = ov_arena_alloc(arena, capacity * sizeof(size_t));
+	if (positions == NULL) {
+		return NULL;
+	}
 	queue->items = items;
 	queue->positions = positions;
 	queue->capacity = capacity;
@@ -175,7 +222,7 @@ OVINTERNAL inline void ov_pq_swap(OvPQ *queue, size_t position_a, size_t positio
 }
 
 OVINTERNAL void ov_pq_fix_up(OvPQ *queue, size_t position) {
-	while (position > 1 && queue->items[position].priority < queue->items[position/2].priority) {
+	while (position > OV_PQ_START_INDEX && queue->items[position].priority < queue->items[position/2].priority) {
 		ov_pq_swap(queue, position, position/2);
 		position = position/2;
 	}
@@ -236,7 +283,7 @@ OVDEF bool ov_pq_contains(OvPQ *heap, size_t index) {
 	return heap->positions[index] != OV_PQ_POSITION_SENTINEL;
 }
 
-OVDEF OvStatus ov_pq_increase_priority(OvPQ *queue, size_t index, float new_priority) {
+OVDEF OvStatus ov_pq_update_priority(OvPQ *queue, size_t index, float new_priority) {
 	if (queue->count == 0) {
 		return OV_STATUS_EMPTY;
 	}
@@ -244,8 +291,14 @@ OVDEF OvStatus ov_pq_increase_priority(OvPQ *queue, size_t index, float new_prio
 		return OV_STATUS_OUT_OF_BOUNDS;
 	}
 	size_t position = queue->positions[index];
+	float old_priority = queue->items[position].priority; 
 	queue->items[position].priority = new_priority;
-	ov_pq_fix_up(queue, position);
+
+	if (new_priority < old_priority) {
+		ov_pq_fix_up(queue, position);
+	} else {
+		ov_pq_fix_down(queue, position);
+	}
 	return OV_STATUS_OK;
 }
 
