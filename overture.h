@@ -164,8 +164,8 @@ OVDEF void *ov_arena_alloc_aligned(OvArena* arena, size_t size, size_t align) {
 	uintptr_t ptr = (uintptr_t)arena->buffer + (uintptr_t)arena->offset;
 	size_t offset_aligned = (size_t)(ov_align_up(ptr, align) - (uintptr_t)arena->buffer);
 
-	// I think this should not overflow?
-	if (offset_aligned <= arena->capacity - size) {
+	// The first check is to make sure the second one doesn't underflow.
+	if (size <= arena->capacity && offset_aligned <= arena->capacity - size) {
 		void* ptr = &arena->buffer[offset_aligned];
 		arena->offset = offset_aligned + size;
 		memset(ptr, 0, size);
@@ -248,6 +248,7 @@ OVDEF OvStatus ov_pq_add(OvPQ *queue, size_t index, float priority) {
 	if (ov_pq_contains(queue, index)) {
 		return OV_STATUS_ALREADY_EXISTS;
 	}
+	// TODO: Off-by-one here?
 	if (queue->count + 1 >= queue->capacity + OV_PQ_START_INDEX || index >= queue->capacity) {
 		return OV_STATUS_OUT_OF_BOUNDS;
 	}
@@ -276,11 +277,11 @@ OVDEF OvStatus ov_pq_remove_root(OvPQ *queue, OV_OUT size_t *index) {
 	return OV_STATUS_OK;
 }
 
-OVDEF bool ov_pq_contains(OvPQ *heap, size_t index) {
-	if (index >= heap->capacity) {
+OVDEF bool ov_pq_contains(OvPQ *queue, size_t index) {
+	if (index >= queue->capacity) {
 		return false;
 	}
-	return heap->positions[index] != OV_PQ_POSITION_SENTINEL;
+	return queue->positions[index] != OV_PQ_POSITION_SENTINEL;
 }
 
 OVDEF OvStatus ov_pq_update_priority(OvPQ *queue, size_t index, float new_priority) {

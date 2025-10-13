@@ -7,6 +7,7 @@ prototyping and development.
 
 Current featuers:
 
+- Arbibtrary type arrays (achieved with macros)
 - Arena allocator
 - Priority queue
 
